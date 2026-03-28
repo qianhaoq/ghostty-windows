@@ -160,8 +160,6 @@ fn prepareContext(getProcAddress: anytype) !void {
 
 /// This is called early right after surface creation.
 pub fn surfaceInit(surface: *apprt.Surface) !void {
-    _ = surface;
-
     switch (apprt.runtime) {
         else => @compileError("unsupported app runtime for OpenGL"),
 
@@ -169,10 +167,28 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
         apprt.gtk,
         => try prepareContext(null),
 
+        // Win32: Load GLAD on the main thread for shader compilation during init.
+        // It will also be loaded on the renderer thread in threadEnter since
+        // GLAD uses threadlocal state.
+        apprt.win32,
+        => try prepareContext(null),
+
         apprt.embedded => {
+            if (comptime builtin.target.os.tag == .windows) {
+                const embedded_surface: *apprt.embedded.Surface = @ptrCast(surface);
+                const hwnd = switch (embedded_surface.platform) {
+                    .windows => |v| v.hwnd,
+                    else => return error.UnsupportedPlatform,
+                };
+
+                embedded_surface.gl_context = try @import("../apprt/windows/wgl.zig").Context.init(hwnd);
+                try prepareContext(null);
+                return;
+            }
+
             // TODO(mitchellh): this does nothing today to allow libghostty
             // to compile for OpenGL targets but libghostty is strictly
-            // broken for rendering on this platforms.
+            // broken for rendering on non-Windows embedded platforms.
         },
     }
 
@@ -190,13 +206,32 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
 /// thread for final main thread setup requirements.
 pub fn finalizeSurfaceInit(self: *const OpenGL, surface: *apprt.Surface) !void {
     _ = self;
-    _ = surface;
+
+    switch (apprt.runtime) {
+        apprt.win32 => {
+            // Release the GL context from the main thread so the renderer
+            // thread can acquire it in threadEnter. WGL contexts can only
+            // be current on one thread at a time.
+            const win_surface: *apprt.win32.Surface = @ptrCast(surface);
+            if (win_surface.gl_context) |*ctx| {
+                ctx.release();
+            }
+        },
+
+        apprt.embedded => {
+            if (comptime builtin.target.os.tag == .windows) {
+                const embedded_surface: *apprt.embedded.Surface = @ptrCast(surface);
+                if (embedded_surface.gl_context) |*ctx| ctx.release();
+            }
+        },
+
+        else => {},
+    }
 }
 
 /// Callback called by renderer.Thread when it begins.
 pub fn threadEnter(self: *const OpenGL, surface: *apprt.Surface) !void {
     _ = self;
-    _ = surface;
 
     switch (apprt.runtime) {
         else => @compileError("unsupported app runtime for OpenGL"),
@@ -208,10 +243,32 @@ pub fn threadEnter(self: *const OpenGL, surface: *apprt.Surface) !void {
             // on the main thread. As such, we don't do anything here.
         },
 
+        apprt.win32 => {
+            // Make the WGL context current on the renderer thread.
+            const win_surface: *apprt.win32.Surface = @ptrCast(surface);
+            if (win_surface.gl_context) |*ctx| {
+                ctx.makeCurrent();
+            }
+
+            // Load GLAD on the renderer thread. GLAD uses threadlocal
+            // state so this must be done on the thread that will draw.
+            try prepareContext(null);
+        },
+
         apprt.embedded => {
+            if (comptime builtin.target.os.tag == .windows) {
+                const embedded_surface: *apprt.embedded.Surface = @ptrCast(surface);
+                if (embedded_surface.gl_context) |*ctx| {
+                    ctx.makeCurrent();
+                }
+
+                try prepareContext(null);
+                return;
+            }
+
             // TODO(mitchellh): this does nothing today to allow libghostty
             // to compile for OpenGL targets but libghostty is strictly
-            // broken for rendering on this platforms.
+            // broken for rendering on non-Windows embedded platforms.
         },
     }
 }
@@ -228,8 +285,15 @@ pub fn threadExit(self: *const OpenGL) void {
             // be sharing the global bindings with other windows.
         },
 
+        apprt.win32 => {
+            // Release the WGL context from the renderer thread.
+            _ = @import("../apprt/windows/win32.zig").wglMakeCurrent(null, null);
+        },
+
         apprt.embedded => {
-            // TODO: see threadEnter
+            if (comptime builtin.target.os.tag == .windows) {
+                _ = @import("../apprt/windows/win32.zig").wglMakeCurrent(null, null);
+            }
         },
     }
 }
@@ -261,6 +325,25 @@ pub fn drawFrameStart(self: *OpenGL) void {
 /// Right now there's nothing we need to do for OpenGL.
 pub fn drawFrameEnd(self: *OpenGL) void {
     _ = self;
+
+    // On Windows, we need to swap buffers explicitly since there's no
+    // windowing framework (like GTK's GLArea) to do it for us.
+    switch (apprt.runtime) {
+        apprt.win32 => {
+            const win32 = @import("../apprt/windows/win32.zig");
+            // Get the current DC and swap buffers
+            const hdc = win32.wglGetCurrentDC();
+            if (hdc) |dc| _ = win32.SwapBuffers(dc);
+        },
+
+        apprt.embedded => if (comptime builtin.target.os.tag == .windows) {
+            const win32 = @import("../apprt/windows/win32.zig");
+            const hdc = win32.wglGetCurrentDC();
+            if (hdc) |dc| _ = win32.SwapBuffers(dc);
+        },
+
+        else => {},
+    }
 }
 
 pub fn initShaders(

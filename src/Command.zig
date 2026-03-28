@@ -32,6 +32,7 @@ const Allocator = std.mem.Allocator;
 const File = std.fs.File;
 const EnvMap = std.process.EnvMap;
 const apprt = @import("apprt.zig");
+const log = std.log.scoped(.command);
 
 /// Function prototype for a function executed /in the child process/ after the
 /// fork, but before exec'ing the command. If the function returns a u8, the
@@ -322,7 +323,10 @@ fn startWindows(self: *Command, arena: Allocator) !void {
             .hStdError = stderr,
             .hStdOutput = stdout,
             .hStdInput = stdin,
-            .dwFlags = windows.STARTF_USESTDHANDLES,
+            // Only set STARTF_USESTDHANDLES when we have actual stdio handles.
+            // When using ConPTY (pseudo_console), I/O is handled through the
+            // pseudo console attribute, not through std handles.
+            .dwFlags = if (self.pseudo_console != null) 0 else windows.STARTF_USESTDHANDLES,
             .lpReserved = null,
             .lpDesktop = null,
             .lpTitle = null,
@@ -343,10 +347,25 @@ fn startWindows(self: *Command, arena: Allocator) !void {
     var flags: windows.DWORD = windows.exp.CREATE_UNICODE_ENVIRONMENT;
     if (attribute_list != null) flags |= windows.exp.EXTENDED_STARTUPINFO_PRESENT;
 
+    // Build the full command line. When using ConPTY, pass null as
+    // lpApplicationName and use the command line only. This matches
+    // how Windows Terminal launches processes and is more compatible
+    // with programs like wsl.exe.
+    const full_cmd_line = if (command_line_w) |w| w.ptr else application_w.ptr;
+
     var process_information: windows.PROCESS_INFORMATION = undefined;
+    log.info(
+        "CreateProcessW path={s} cwd={?s} conpty={} argc={}",
+        .{
+            self.path,
+            self.cwd,
+            self.pseudo_console != null,
+            self.args.len,
+        },
+    );
     if (windows.exp.kernel32.CreateProcessW(
-        application_w.ptr,
-        if (command_line_w) |w| w.ptr else null,
+        null,
+        full_cmd_line,
         null,
         null,
         windows.TRUE,
@@ -358,6 +377,7 @@ fn startWindows(self: *Command, arena: Allocator) !void {
     ) == 0) return windows.unexpectedError(windows.kernel32.GetLastError());
 
     self.pid = process_information.hProcess;
+    log.info("CreateProcessW succeeded path={s} pid={?}", .{ self.path, self.pid });
 }
 
 fn setupFd(src: File.Handle, target: i32) !void {

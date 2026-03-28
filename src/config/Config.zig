@@ -4578,7 +4578,8 @@ pub fn finalize(self: *Config) !void {
             switch (builtin.os.tag) {
                 .windows => {
                     if (self.command == null) {
-                        log.warn("no default shell found, will default to using cmd", .{});
+                        // Default to cmd.exe. Users can set command=powershell.exe
+                        // or command=wsl.exe in their config file.
                         self.command = .{ .shell = "cmd.exe" };
                     }
 
@@ -4623,7 +4624,7 @@ pub fn finalize(self: *Config) !void {
 
     // Apprt-specific defaults
     switch (build_config.app_runtime) {
-        .none => {},
+        .none, .windows => {},
         .gtk => {
             switch (self.@"gtk-single-instance") {
                 .true, .false => {},
@@ -9026,7 +9027,7 @@ pub const GtkTitlebarStyle = enum(c_int) {
             .{ .name = "GhosttyGtkTitlebarStyle" },
         ),
 
-        .none => void,
+        .none, .windows => void,
     };
 };
 
@@ -9741,7 +9742,7 @@ pub const WindowDecoration = enum(c_int) {
             .{ .name = "GhosttyConfigWindowDecoration" },
         ),
 
-        .none => void,
+        .none, .windows => void,
     };
 
     pub fn parseCLI(input_: ?[]const u8) !WindowDecoration {

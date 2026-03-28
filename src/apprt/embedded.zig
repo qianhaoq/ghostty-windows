@@ -8,7 +8,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
-const objc = @import("objc");
+const objc = if (builtin.target.os.tag.isDarwin()) @import("objc") else struct {
+    pub const Object = opaque {};
+};
 const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
 const input = @import("../input.zig");
@@ -20,6 +22,14 @@ const CoreInspector = @import("../inspector/main.zig").Inspector;
 const CoreSurface = @import("../Surface.zig");
 const configpkg = @import("../config.zig");
 const Config = configpkg.Config;
+const windows_win32 = if (builtin.target.os.tag == .windows)
+    @import("windows/win32.zig")
+else
+    void;
+const windows_wgl = if (builtin.target.os.tag == .windows)
+    @import("windows/wgl.zig")
+else
+    void;
 
 const log = std.log.scoped(.embedded_window);
 
@@ -343,6 +353,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    windows: Windows,
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -356,6 +367,11 @@ pub const Platform = union(PlatformTag) {
         uiview: objc.Object,
     } else void;
 
+    pub const Windows = if (builtin.target.os.tag == .windows) struct {
+        /// The HWND to render the surface on.
+        hwnd: windows_win32.HWND,
+    } else void;
+
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
@@ -365,6 +381,10 @@ pub const Platform = union(PlatformTag) {
 
         ios: extern struct {
             uiview: ?*anyopaque,
+        },
+
+        windows: extern struct {
+            hwnd: ?*anyopaque,
         },
     };
 
@@ -385,6 +405,13 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .windows => if (Windows != void) windows: {
+                const config = c_platform.windows;
+                const hwnd: windows_win32.HWND = @ptrCast(config.hwnd orelse
+                    break :windows error.HWNDMustBeSet);
+                break :windows .{ .windows = .{ .hwnd = hwnd } };
+            } else error.UnsupportedPlatform,
         };
     }
 };
@@ -395,6 +422,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
+    windows = 3,
 };
 
 pub const EnvVar = extern struct {
@@ -413,6 +441,7 @@ pub const Surface = struct {
     content_scale: apprt.ContentScale,
     size: apprt.SurfaceSize,
     cursor_pos: apprt.CursorPos,
+    gl_context: if (builtin.target.os.tag == .windows) ?windows_wgl.Context else void = if (builtin.target.os.tag == .windows) null else {},
     inspector: ?*Inspector = null,
 
     /// The current title of the surface. The embedded apprt saves this so
@@ -474,6 +503,7 @@ pub const Surface = struct {
             },
             .size = .{ .width = 800, .height = 600 },
             .cursor_pos = .{ .x = -1, .y = -1 },
+            .gl_context = if (builtin.target.os.tag == .windows) null else {},
         };
 
         // Add ourselves to the list of surfaces on the app.
@@ -604,6 +634,17 @@ pub const Surface = struct {
 
         // Clean up our core surface so that all the rendering and IO stop.
         self.core_surface.deinit();
+
+        if (comptime builtin.target.os.tag == .windows) {
+            if (self.gl_context) |*ctx| {
+                const hwnd = switch (self.platform) {
+                    .windows => |v| v.hwnd,
+                    else => unreachable,
+                };
+                ctx.deinit(hwnd);
+                self.gl_context = null;
+            }
+        }
     }
 
     /// Initialize the inspector instance. A surface can only have one

@@ -342,6 +342,10 @@ const WindowsPty = struct {
     /// Open a new PTY with the given initial size.
     pub fn open(size: winsize) OpenError!Pty {
         var pty: Pty = undefined;
+        log.info(
+            "opening ConPTY rows={} cols={} width={} height={}",
+            .{ size.ws_row, size.ws_col, size.ws_xpixel, size.ws_ypixel },
+        );
 
         var pipe_path_buf: [128]u8 = undefined;
         var pipe_path_buf_w: [128]u16 = undefined;
@@ -360,6 +364,7 @@ const WindowsPty = struct {
         ) catch unreachable;
         pipe_path_buf_w[pipe_path_w_len] = 0;
         const pipe_path_w = pipe_path_buf_w[0..pipe_path_w_len :0];
+        log.info("creating ConPTY pipe path={s}", .{pipe_path});
 
         const security_attributes = windows.SECURITY_ATTRIBUTES{
             .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
@@ -437,6 +442,7 @@ const WindowsPty = struct {
         if (result != windows.S_OK) return error.Unexpected;
 
         pty.size = size;
+        log.info("ConPTY created successfully rows={} cols={}", .{ size.ws_row, size.ws_col });
         return pty;
     }
 
@@ -467,6 +473,7 @@ const WindowsPty = struct {
 
         if (result != windows.S_OK) return error.ResizeFailed;
         self.size = size;
+        log.info("ConPTY resized rows={} cols={}", .{ size.ws_row, size.ws_col });
     }
 
     /// Get information about the process(es) attached to the PTY. Returns

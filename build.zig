@@ -59,7 +59,11 @@ pub fn build(b: *std.Build) !void {
     const i18n = if (config.i18n) try buildpkg.GhosttyI18n.init(b, &config) else null;
 
     // Ghostty executable, the actual runnable Ghostty program.
-    const exe = try buildpkg.GhosttyExe.init(b, &config, &deps);
+    const exe = if (config.app_runtime != .none)
+        try buildpkg.GhosttyExe.init(b, &config, &deps)
+    else
+        null;
+    var windows_host: ?buildpkg.GhosttyWindowsHost = null;
 
     // Ghostty docs
     const docs = try buildpkg.GhosttyDocs.init(b, &deps);
@@ -112,7 +116,7 @@ pub fn build(b: *std.Build) !void {
     // Runtime "none" is libghostty, anything else is an executable.
     if (config.app_runtime != .none) {
         if (config.emit_exe) {
-            exe.install();
+            exe.?.install();
             resources.install();
             if (i18n) |v| v.install();
         }
@@ -129,8 +133,28 @@ pub fn build(b: *std.Build) !void {
         // build on macOS this way ironically so we need to fix that.
         if (!config.target.result.os.tag.isDarwin()) {
             lib_shared.installHeader(); // Only need one header
-            lib_shared.install("libghostty.so");
-            lib_static.install("libghostty.a");
+
+            if (config.target.result.os.tag == .windows) {
+                lib_shared.install("ghostty.dll");
+                lib_static.install(if (config.target.result.abi == .msvc)
+                    "ghostty.lib"
+                else
+                    "libghostty.a");
+
+                if (config.emit_exe) {
+                    windows_host = try buildpkg.GhosttyWindowsHost.init(
+                        b,
+                        &config,
+                        &lib_static,
+                    );
+                    windows_host.?.install();
+                    resources.install();
+                    if (i18n) |v| v.install();
+                }
+            } else {
+                lib_shared.install("libghostty.so");
+                lib_static.install("libghostty.a");
+            }
         }
     }
 
@@ -173,7 +197,7 @@ pub fn build(b: *std.Build) !void {
     // Run step
     run: {
         if (config.app_runtime != .none) {
-            const run_cmd = b.addRunArtifact(exe.exe);
+            const run_cmd = b.addRunArtifact(exe.?.exe);
             if (b.args) |args| run_cmd.addArgs(args);
 
             // Set the proper resources dir so things like shell integration
@@ -190,6 +214,17 @@ pub fn build(b: *std.Build) !void {
         }
 
         assert(config.app_runtime == .none);
+
+        if (windows_host) |host| {
+            const run_cmd = b.addRunArtifact(host.exe);
+            if (b.args) |args| run_cmd.addArgs(args);
+            run_cmd.setEnvironmentVariable(
+                "GHOSTTY_RESOURCES_DIR",
+                b.getInstallPath(.prefix, "share/ghostty"),
+            );
+            run_step.dependOn(&run_cmd.step);
+            break :run;
+        }
 
         // On macOS we can run the macOS app. For "run" we always force
         // a native-only build so that we can run as quickly as possible.

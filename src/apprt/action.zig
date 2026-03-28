@@ -682,7 +682,7 @@ pub const InitialSize = extern struct {
             .{ .name = "GhosttyApprtInitialSize" },
         ),
 
-        .none => void,
+        .none, .windows => void,
     };
 };
 

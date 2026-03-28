@@ -30,6 +30,7 @@ pub const SYNCHRONIZE = windows.SYNCHRONIZE;
 pub const WAIT_FAILED = windows.WAIT_FAILED;
 pub const FALSE = windows.FALSE;
 pub const TRUE = windows.TRUE;
+pub extern "kernel32" fn OutputDebugStringA(lpOutputString: [*:0]const u8) callconv(.winapi) void;
 
 pub const exp = struct {
     pub const HPCON = windows.LPVOID;

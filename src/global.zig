@@ -32,6 +32,8 @@ pub const GlobalState = struct {
     alloc: std.mem.Allocator,
     action: ?cli.ghostty.Action,
     logging: Logging,
+    log_file: ?std.fs.File = null,
+    log_mutex: std.Thread.Mutex = .{},
     rlimits: ResourceLimits = .{},
 
     /// The app resources directory, equivalent to zig-out/share when we build
@@ -46,6 +48,8 @@ pub const GlobalState = struct {
         /// Whether to log to macOS's unified logging. Enabled by default
         /// on macOS.
         macos: bool = builtin.os.tag.isDarwin(),
+        /// Whether to forward logs to the Windows debugger.
+        debugger: bool = builtin.os.tag == .windows,
     };
 
     /// Initialize the global state.
@@ -66,6 +70,8 @@ pub const GlobalState = struct {
             .alloc = undefined,
             .action = null,
             .logging = .{},
+            .log_file = null,
+            .log_mutex = .{},
             .rlimits = .{},
             .resources_dir = .{},
         };
@@ -116,6 +122,21 @@ pub const GlobalState = struct {
             self.logging = cli.args.parsePackedStruct(Logging, v.value) catch .{};
         }
 
+        if (comptime builtin.os.tag == .windows) {
+            if ((try internal_os.getenv(self.alloc, "GHOSTTY_LOG_FILE"))) |v| {
+                defer v.deinit(self.alloc);
+                if (v.value.len > 0) {
+                    self.log_file = openLogFile(v.value) catch |err| blk: {
+                        std.debug.print(
+                            "warning: failed to open GHOSTTY_LOG_FILE={s} err={}\n",
+                            .{ v.value, err },
+                        );
+                        break :blk null;
+                    };
+                }
+            }
+        }
+
         // Setup our signal handlers before logging
         initSignals();
 
@@ -138,6 +159,12 @@ pub const GlobalState = struct {
         }
         std.log.info("renderer={}", .{renderer.Renderer});
         std.log.info("libxev default backend={t}", .{xev.backend});
+        if (comptime builtin.os.tag == .windows) {
+            std.log.info("windows debugger logging={}", .{self.logging.debugger});
+            if (self.log_file != null) {
+                std.log.info("windows file logging enabled via GHOSTTY_LOG_FILE", .{});
+            }
+        }
 
         // As early as possible, initialize our resource limits.
         self.rlimits = .init();
@@ -188,6 +215,11 @@ pub const GlobalState = struct {
         // Flush our crash logs
         crash.deinit();
 
+        if (self.log_file) |*file| {
+            file.close();
+            self.log_file = null;
+        }
+
         if (self.gpa) |*value| {
             // We want to ensure that we deinit the GPA because this is
             // the point at which it will output if there were safety violations.
@@ -213,6 +245,19 @@ pub const GlobalState = struct {
         // be fixed one day but for now this helps make this a bit more
         // robust.
         p.sigaction(p.SIG.PIPE, &sa, null);
+    }
+
+    fn openLogFile(path: []const u8) !std.fs.File {
+        var file = if (std.fs.path.isAbsoluteWindows(path))
+            try std.fs.createFileAbsolute(path, .{
+                .truncate = false,
+            })
+        else
+            try std.fs.cwd().createFile(path, .{
+                .truncate = false,
+            });
+        try file.seekFromEnd(0);
+        return file;
     }
 };
 

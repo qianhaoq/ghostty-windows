@@ -118,6 +118,31 @@ fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
+    windows: {
+        if (comptime builtin.os.tag != .windows) break :windows;
+        if (!state.logging.debugger and state.log_file == null) break :windows;
+
+        const level_txt = comptime level.asText();
+        const prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
+
+        var buf: [4096]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&buf);
+        stream.writer().print(level_txt ++ prefix ++ format ++ "\n", args) catch break :windows;
+        const written = stream.getWritten();
+
+        state.log_mutex.lock();
+        defer state.log_mutex.unlock();
+
+        if (state.logging.debugger and written.len < buf.len) {
+            buf[written.len] = 0;
+            @import("os/main.zig").windows.OutputDebugStringA(@ptrCast(&buf));
+        }
+
+        if (state.log_file) |*file| {
+            file.writeAll(written) catch {};
+        }
+    }
+
     // On Mac, we use unified logging. To view this:
     //
     //   sudo log stream --level debug --predicate 'subsystem=="com.mitchellh.ghostty"'

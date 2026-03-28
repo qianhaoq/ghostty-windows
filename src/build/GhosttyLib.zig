@@ -13,6 +13,7 @@ step: *std.Build.Step,
 /// The final static library file
 output: std.Build.LazyPath,
 dsym: ?std.Build.LazyPath,
+compile: ?*std.Build.Step.Compile = null,
 
 pub fn initStatic(
     b: *std.Build,
@@ -48,6 +49,7 @@ pub fn initStatic(
         .step = &lib.step,
         .output = lib.getEmittedBin(),
         .dsym = null,
+        .compile = lib,
     };
 
     // Create a static lib that contains all our dependencies.
@@ -64,6 +66,7 @@ pub fn initStatic(
 
         // Static libraries cannot have dSYMs because they aren't linked.
         .dsym = null,
+        .compile = null,
     };
 }
 
@@ -106,6 +109,7 @@ pub fn initShared(
         .step = &lib.step,
         .output = lib.getEmittedBin(),
         .dsym = dsymutil,
+        .compile = lib,
     };
 }
 
@@ -136,6 +140,7 @@ pub fn initMacOSUniversal(
         // You can't run dsymutil on a universal binary, you have to
         // do it on the individual binaries.
         .dsym = null,
+        .compile = null,
     };
 }
 

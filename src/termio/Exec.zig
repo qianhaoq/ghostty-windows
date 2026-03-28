@@ -237,6 +237,9 @@ pub fn focusGained(
     assert(td.backend == .exec);
     const execdata = &td.backend.exec;
 
+    // Termios monitoring is not supported on Windows yet.
+    if (comptime builtin.os.tag == .windows) return;
+
     if (!focused) {
         // Flag the timer to end on the next iteration. This is
         // a lot cheaper than doing full timer cancellation.
@@ -751,10 +754,14 @@ const Subprocess = struct {
         // Setup our shell integration, if we can.
         const shell_command: configpkg.Command = shell: {
             const default_shell_command: configpkg.Command =
-                cfg.command orelse .{ .shell = switch (builtin.os.tag) {
-                    .windows => "cmd.exe",
-                    else => "sh",
-                } };
+                cfg.command orelse switch (builtin.os.tag) {
+                    .windows => .{ .direct = &.{
+                        "cmd.exe",
+                        "/K",
+                        "chcp 65001>nul",
+                    } },
+                    else => .{ .shell = "sh" },
+                };
 
             // Always set up shell features (GHOSTTY_SHELL_FEATURES). These are
             // used by both automatic and manual shell integrations.
@@ -1552,9 +1559,47 @@ fn execCommand(
             defer args.deinit(alloc);
 
             if (comptime builtin.os.tag == .windows) {
-                // We run our shell wrapped in `cmd.exe` so that we don't have
-                // to parse the command line ourselves if it has arguments.
+                // On Windows, check if the shell command itself is an
+                // interactive shell (cmd.exe, powershell, etc.). If so,
+                // run it directly. Otherwise, wrap in cmd.exe /C.
+                const is_interactive_shell = std.mem.endsWith(u8, v, "cmd.exe") or
+                    std.mem.endsWith(u8, v, "powershell.exe") or
+                    std.mem.endsWith(u8, v, "pwsh.exe") or
+                    std.mem.endsWith(u8, v, "wsl.exe") or
+                    std.mem.endsWith(u8, v, "bash.exe") or
+                    std.mem.eql(u8, v, "cmd") or
+                    std.mem.eql(u8, v, "cmd.exe") or
+                    std.mem.eql(u8, v, "powershell") or
+                    std.mem.eql(u8, v, "pwsh") or
+                    std.mem.eql(u8, v, "wsl") or
+                    std.mem.eql(u8, v, "wsl.exe");
 
+                if (is_interactive_shell) {
+                    // Run the shell directly without wrapping.
+                    // Resolve the full path if it's just a filename.
+                    if (std.mem.indexOfScalar(u8, v, '\\') == null and
+                        std.mem.indexOfScalar(u8, v, '/') == null)
+                    {
+                        const windir = std.process.getEnvVarOwned(alloc, "WINDIR") catch "C:\\WINDOWS";
+                        // PowerShell lives in a different subdirectory
+                        if (std.mem.eql(u8, v, "powershell.exe") or std.mem.eql(u8, v, "powershell")) {
+                            const full_path = try std.fs.path.joinZ(alloc, &[_][]const u8{ windir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe" });
+                            try args.append(alloc, full_path);
+                        } else {
+                            const full_path = try std.fs.path.joinZ(alloc, &[_][]const u8{ windir, "System32", v });
+                            try args.append(alloc, full_path);
+                        }
+                    } else {
+                        try args.append(alloc, try alloc.dupeZ(u8, v));
+                    }
+                    log.info(
+                        "resolved Windows shell command original={s} mode=interactive argv0={s}",
+                        .{ v, args.items[0] },
+                    );
+                    break :shell try args.toOwnedSlice(alloc);
+                }
+
+                // For non-interactive commands, wrap in cmd.exe /C
                 // Note we don't free any of the memory below since it is
                 // allocated in the arena.
                 const windir = std.process.getEnvVarOwned(
@@ -1572,6 +1617,10 @@ fn execCommand(
 
                 try args.append(alloc, cmd);
                 try args.append(alloc, "/C");
+                log.info(
+                    "resolved Windows shell command original={s} mode=cmd-wrap argv0={s}",
+                    .{ v, cmd },
+                );
             } else {
                 // We run our shell wrapped in `/bin/sh` so that we don't have
                 // to parse the command line ourselves if it has arguments.
